@@ -1,0 +1,18 @@
+name = "taskbot"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# Cloudflare D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "taskbot_db"
+database_id = "ваш_database_id_после_создания"
+
+# Cron Triggers для напоминаний
+# Запускается каждые 15 минут
+[triggers]
+crons = ["*/15 * * * *"]
+
+# Environment variables (секреты добавляются через wrangler secret)
+[vars]
+# BOT_TOKEN добавляется через: wrangler secret put BOT_TOKEN
