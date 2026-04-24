@@ -6,7 +6,7 @@ compatibility_date = "2024-01-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "taskbot_db"
-database_id = "ваш_database_id_после_создания"
+database_id = "f616a467-9fc4-4846-9c79-3b3de5fcab06"
 
 # Cron Triggers для напоминаний
 # Запускается каждые 15 минут
