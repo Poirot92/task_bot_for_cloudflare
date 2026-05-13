@@ -2142,7 +2142,7 @@ async function answerCallbackQuery(callbackQueryId, env, text = null) {
   }
 }
 
-// ==================== УТИЛИТЫ ====================
+// ==================== УТИЛИТЫ  ====================
 
 function formatDeadline(deadline) {
   if (!deadline) return '';

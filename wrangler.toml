@@ -13,6 +13,6 @@ database_id = "f616a467-9fc4-4846-9c79-3b3de5fcab06"
 [triggers]
 crons = ["*/15 * * * *"]
 
-# Environment variables (секреты добавляются через wrangler secret)
+# Environment variables (секреты добавляются через wrangler secret )
 [vars]
 # BOT_TOKEN добавляется через: wrangler secret put BOT_TOKEN

@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS reminders_sent (
     UNIQUE(meeting_id, reminder_type)
 );
 
--- Индексы для производительности
+-- Индексы для производительности 
 CREATE INDEX IF NOT EXISTS idx_users_org ON users(org_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_to);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_by);
