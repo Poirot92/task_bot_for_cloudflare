@@ -1,7 +1,7 @@
 {
   "name": "taskbot-cloudflare",
   "version": "1.0.0",
-  "description": "Telegram Task Management Bot на Cloudflare Workers",
+  "description": "Telegram Task Management Bot на Cloudflare  Workers",
   "main": "src/index.js",
   "scripts": {
     "dev": "wrangler dev",

@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS meeting_participants (
     UNIQUE(meeting_id, user_id)
 );
 
--- Таблица отправленных напоминаний
+-- Таблица отправленных  напоминаний
 CREATE TABLE IF NOT EXISTS reminders_sent (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER,
