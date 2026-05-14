@@ -344,9 +344,25 @@ async function handleConversationState(chatId, userId, text, state, user, messag
         break;
         
       case 'ENTER_PHONE':
-        const phone = message.contact ? message.contact.phone_number : text;
-        console.log('📱 Entering phone:', phone);
-        await handleEnterPhone(chatId, userId, phone, stateData, message.from, env);
+        // Только своя кнопка контакта - никакого текста или чужих контактов
+        if (!message.contact) {
+          await sendMessage(chatId, '❌ Используйте кнопку ниже чтобы отправить свой номер', env, {
+            keyboard: [[{ text: '📱 Отправить номер', request_contact: true }]],
+            resize_keyboard: true,
+            one_time_keyboard: true
+          });
+          return;
+        }
+        if (message.contact.user_id !== userId) {
+          await sendMessage(chatId, '❌ Пожалуйста, отправьте свой номер, а не чужой контакт', env, {
+            keyboard: [[{ text: '📱 Отправить номер', request_contact: true }]],
+            resize_keyboard: true,
+            one_time_keyboard: true
+          });
+          return;
+        }
+        console.log('📱 Phone accepted:', message.contact.phone_number);
+        await handleEnterPhone(chatId, userId, message.contact.phone_number, stateData, message.from, env);
         break;
         
       case 'MEETING_TITLE':
@@ -1829,13 +1845,15 @@ async function markReminderSent(taskId, meetingId, reminderType, env) {
 
 async function getUserState(userId, env) {
   try {
+    // ВАЖНО: всегда создаём таблицу перед запросом, не в catch
+    await createUserStatesTable(env);
     const result = await env.DB.prepare(
       'SELECT * FROM user_states WHERE user_id = ?'
     ).bind(userId).first();
+    console.log(`📊 getUserState(${userId}):`, result ? result.state : 'null');
     return result;
   } catch (error) {
-    // Таблица может не существовать - создадим
-    await createUserStatesTable(env);
+    console.error('❌ Error getting user state:', error.message);
     return null;
   }
 }
@@ -1851,9 +1869,10 @@ async function setState(userId, state, data, env) {
       VALUES (?, ?, ?, datetime('now'))
     `).bind(userId, state, dataJson).run();
     
-    console.log(`✅ State set for user ${userId}: ${state}`);
+    console.log(`✅ setState(${userId}): "${state}", data: ${dataJson}`);
   } catch (error) {
     console.error('❌ Error setting state:', error.message);
+    console.error('❌ Stack:', error.stack);
     throw error;
   }
 }
@@ -1880,8 +1899,9 @@ async function createUserStatesTable(env) {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `).run();
+    // Не логируем здесь - вызывается слишком часто
   } catch (error) {
-    // Таблица уже существует - игнорируем
+    console.error('❌ Error creating user_states table:', error.message);
   }
 }
 
