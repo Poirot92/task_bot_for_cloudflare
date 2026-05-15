@@ -495,7 +495,7 @@ async function handleCreateOrg(chatId, userId, orgName, userFrom, env) {
     const keyboard = getBossKeyboard();
     await sendMessage(
       chatId,
-      `✅ Организация **${orgName}** создана!\n\n🔑 Код для сотрудников: \`${result.paymentCode}\`\n\nТеперь вы можете создавать задачи и приглашать сотрудников.`,
+      `✅ Организация **${orgName}** создана!\n\n🔑 Код для сотрудников: `${result.paymentCode}`\n\nТеперь вы можете создавать задачи и приглашать сотрудников.`,
       env,
       keyboard
     );
@@ -512,6 +512,27 @@ async function handleSaveComment(chatId, userId, commentText, taskId, user, env)
     await addComment(taskId, userId, commentText, env);
     await clearState(userId, env);
     await sendMessage(chatId, '✅ Комментарий добавлен!', env);
+
+    // Уведомляем другую сторону о новом комментарии
+    const task = await getTask(taskId, env);
+    if (task) {
+      if (user.role === 'boss') {
+        // Босс прокомментировал → уведомляем сотрудника
+        await sendMessage(
+          task.assigned_to,
+          `💬 **Новый комментарий от руководителя!**\n\n📋 Задача: **${task.title}**\n\n👔 ${user.first_name}: _${commentText}_`,
+          env
+        );
+      } else {
+        // Сотрудник прокомментировал → уведомляем босса
+        await sendMessage(
+          task.created_by,
+          `💬 **Новый комментарий от сотрудника!**\n\n📋 Задача: **${task.title}**\n\n👨‍💼 ${user.first_name}: _${commentText}_`,
+          env
+        );
+      }
+    }
+
     await handleViewTask(chatId, taskId, user, env);
   } catch (error) {
     console.error('❌ Error saving comment:', error.message);
@@ -597,7 +618,9 @@ async function handleViewTask(chatId, taskId, user, env) {
     let text = `📋 **${task.title}**\n\n`;
     text += `📊 Статус: ${statusEmoji[task.status]} ${statusText[task.status]}\n`;
     text += `📝 ${task.description}\n`;
-    
+    if (task.created_at) {
+      text += `🕐 Создана: ${formatDeadline(task.created_at)}\n`;
+    }
     if (task.deadline) {
       text += `📅 Дедлайн: ${formatDeadline(task.deadline)}\n`;
     }
@@ -731,7 +754,7 @@ async function handleShowOrgCode(chatId, user, env) {
     
     await sendMessage(
       chatId,
-      `🔑 **Код вашей организации:**\n\n\`${org.payment_code}\`\n\nОтправьте этот код сотрудникам для присоединения.`,
+      `🔑 **Код вашей организации:**\n\n`${org.payment_code}`\n\nОтправьте этот код сотрудникам для присоединения.`,
       env
     );
   } catch (error) {
@@ -894,6 +917,7 @@ async function handleShowMyMeetings(chatId, userId, env) {
       text += `   ⏰ ${formatDeadline(meeting.meeting_datetime)}\n`;
       text += `   📍 ${meeting.location || 'Место не указано'}\n\n`;
     }
+    // meeting created_at shown in detail view
     
     await sendMessage(chatId, text, env);
   } catch (error) {
@@ -1282,49 +1306,234 @@ async function checkReminders(env) {
 async function checkTaskReminders(env) {
   try {
     const now = new Date();
-    
-    // Получаем все незавершённые задачи с дедлайном
+
     const tasks = await env.DB.prepare(`
-      SELECT t.id, t.title, t.deadline, t.assigned_to, t.created_by,
+      SELECT t.id, t.title, t.deadline, t.status, t.assigned_to, t.created_by, t.created_at,
              emp.first_name as emp_name, boss.first_name as boss_name
       FROM tasks t
       JOIN users emp ON t.assigned_to = emp.id
       JOIN users boss ON t.created_by = boss.id
-      WHERE t.status != 'completed' 
+      WHERE t.status != 'completed'
       AND t.deadline IS NOT NULL
       AND t.deadline != ''
     `).all();
-    
+
     for (const task of tasks.results) {
       const deadline = new Date(task.deadline);
-      const timeDiff = deadline - now;
-      const hoursDiff = timeDiff / (1000 * 60 * 60);
-      
-      // Напоминание за 24 часа сотруднику
-      if (hoursDiff >= 23.5 && hoursDiff <= 24.5) {
-        const sent = await wasReminderSent(task.id, null, 'employee_1day', env);
-        if (!sent) {
-          await sendMessage(
-            task.assigned_to,
-            `⏰ **Напоминание!**\n\n📋 Задача: **${task.title}**\n📅 Дедлайн: **завтра** (${formatDeadline(task.deadline)})\n\nНе забудь выполнить!`,
-            env
-          );
-          await markReminderSent(task.id, null, 'employee_1day', env);
-          console.log(`✅ Sent 1-day reminder to employee ${task.assigned_to} for task ${task.id}`);
+      const created  = new Date(task.created_at);
+      const hoursLeft  = (deadline - now)    / 3600000; // часов до дедлайна
+      const hoursSince = (now     - created) / 3600000; // часов с момента создания
+      const totalHours = (deadline - created) / 3600000; // общая длительность задачи
+
+      // ── 1. ЗАДАЧА НЕ ПРИНЯТА К РАБОТЕ (pending) ──────────────────────────
+      if (task.status === 'pending') {
+
+        // Прошло >= 2ч → намёк шефу с юмором
+        if (hoursSince >= 2) {
+          const sent = await wasReminderSent(task.id, null, 'boss_not_accepted_2h', env);
+          if (!sent) {
+            await sendMessage(task.created_by,
+              `😴 *Шеф, тут задачку не взяли в работу...*
+
+` +
+              `📋 ${task.title}
+` +
+              `👨‍💼 ${task.emp_name} пока смотрит в окно
+` +
+              `📅 Дедлайн: ${formatDeadline(task.deadline)}
+
+` +
+              `_Может напомнить лично? 😄_`, env);
+            await markReminderSent(task.id, null, 'boss_not_accepted_2h', env);
+          }
+        }
+
+        // Прошло >= 24ч и всё ещё pending → шефу серьёзнее
+        if (hoursSince >= 24) {
+          const sent = await wasReminderSent(task.id, null, 'boss_not_accepted_24h', env);
+          if (!sent) {
+            await sendMessage(task.created_by,
+              `🚨 *Задача уже сутки висит нетронутой!*
+
+` +
+              `📋 ${task.title}
+` +
+              `👨‍💼 Исполнитель: ${task.emp_name}
+` +
+              `📅 Дедлайн: ${formatDeadline(task.deadline)}
+
+` +
+              `_Статус: даже не начата. Пора поговорить!_`, env);
+            await markReminderSent(task.id, null, 'boss_not_accepted_24h', env);
+          }
         }
       }
-      
-      // Напоминание за 2 часа боссу
-      if (hoursDiff >= 1.75 && hoursDiff <= 2.25) {
-        const sent = await wasReminderSent(task.id, null, 'boss_2hours', env);
-        if (!sent) {
-          await sendMessage(
-            task.created_by,
-            `⚠️ **Внимание!**\n\n📋 Задача: **${task.title}**\n👨‍💼 Исполнитель: ${task.emp_name}\n📅 Дедлайн через **2 часа**\n\nЗадача ещё не завершена!`,
-            env
-          );
-          await markReminderSent(task.id, null, 'boss_2hours', env);
-          console.log(`✅ Sent 2-hour reminder to boss ${task.created_by} for task ${task.id}`);
+
+      // ── 2. УМНЫЕ НАПОМИНАНИЯ ДО ДЕДЛАЙНА ────────────────────────────────
+      // Best practice: напоминаем пропорционально длительности задачи
+
+      if (hoursLeft > 0) {
+
+        // ЗАДАЧА >= 3 ДНЕЙ (72ч+)
+        // → сотруднику за 24ч
+        if (totalHours >= 72 && hoursLeft >= 23.5 && hoursLeft <= 24.5) {
+          const sent = await wasReminderSent(task.id, null, 'emp_24h', env);
+          if (!sent) {
+            await sendMessage(task.assigned_to,
+              `⏰ *Напоминание!*
+
+📋 ${task.title}
+📅 Дедлайн *завтра* (${formatDeadline(task.deadline)})
+
+Всё идёт по плану? 💪`, env);
+            await markReminderSent(task.id, null, 'emp_24h', env);
+          }
+        }
+        // → шефу за 3ч (если задача ещё не завершена)
+        if (totalHours >= 72 && hoursLeft >= 2.75 && hoursLeft <= 3.25) {
+          const sent = await wasReminderSent(task.id, null, 'boss_3h_long', env);
+          if (!sent) {
+            await sendMessage(task.created_by,
+              `⚠️ *До дедлайна 3 часа!*
+
+📋 ${task.title}
+👨‍💼 ${task.emp_name}
+📅 ${formatDeadline(task.deadline)}
+
+Задача ещё не завершена!`, env);
+            await markReminderSent(task.id, null, 'boss_3h_long', env);
+          }
+        }
+
+        // ЗАДАЧА 1-3 ДНЯ (24-72ч)
+        // → сотруднику за 6ч
+        if (totalHours >= 24 && totalHours < 72 && hoursLeft >= 5.75 && hoursLeft <= 6.25) {
+          const sent = await wasReminderSent(task.id, null, 'emp_6h', env);
+          if (!sent) {
+            await sendMessage(task.assigned_to,
+              `⏰ *Осталось 6 часов!*
+
+📋 ${task.title}
+📅 Дедлайн: ${formatDeadline(task.deadline)}
+
+Как дела с выполнением? 🔥`, env);
+            await markReminderSent(task.id, null, 'emp_6h', env);
+          }
+        }
+        // → шефу за 2ч
+        if (totalHours >= 24 && totalHours < 72 && hoursLeft >= 1.75 && hoursLeft <= 2.25) {
+          const sent = await wasReminderSent(task.id, null, 'boss_2h_mid', env);
+          if (!sent) {
+            await sendMessage(task.created_by,
+              `⚠️ *До дедлайна 2 часа!*
+
+📋 ${task.title}
+👨‍💼 ${task.emp_name}
+📅 ${formatDeadline(task.deadline)}
+
+Задача ещё не завершена!`, env);
+            await markReminderSent(task.id, null, 'boss_2h_mid', env);
+          }
+        }
+
+        // ЗАДАЧА < 24 ЧАСОВ
+        // → сотруднику за 3ч
+        if (totalHours < 24 && hoursLeft >= 2.75 && hoursLeft <= 3.25) {
+          const sent = await wasReminderSent(task.id, null, 'emp_3h_short', env);
+          if (!sent) {
+            await sendMessage(task.assigned_to,
+              `🔥 *Осталось 3 часа!*
+
+📋 ${task.title}
+📅 Дедлайн: ${formatDeadline(task.deadline)}
+
+Давай, финишная прямая! 💪`, env);
+            await markReminderSent(task.id, null, 'emp_3h_short', env);
+          }
+        }
+        // → сотруднику за 1ч
+        if (totalHours < 24 && hoursLeft >= 0.75 && hoursLeft <= 1.25) {
+          const sent = await wasReminderSent(task.id, null, 'emp_1h_short', env);
+          if (!sent) {
+            await sendMessage(task.assigned_to,
+              `🚨 *Остался 1 час!*
+
+📋 ${task.title}
+📅 Дедлайн: ${formatDeadline(task.deadline)}
+
+Последний рывок! Ты можешь! 🏃`, env);
+            await markReminderSent(task.id, null, 'emp_1h_short', env);
+          }
+        }
+        // → шефу за 1ч (для коротких задач)
+        if (totalHours < 24 && hoursLeft >= 0.75 && hoursLeft <= 1.25) {
+          const sent = await wasReminderSent(task.id, null, 'boss_1h_short', env);
+          if (!sent) {
+            await sendMessage(task.created_by,
+              `⚠️ *До дедлайна 1 час!*
+
+📋 ${task.title}
+👨‍💼 ${task.emp_name}
+📅 ${formatDeadline(task.deadline)}
+
+Задача ещё не завершена!`, env);
+            await markReminderSent(task.id, null, 'boss_1h_short', env);
+          }
+        }
+      }
+
+      // ── 3. ДЕДЛАЙН ПРОСРОЧЕН ─────────────────────────────────────────────
+      if (hoursLeft < 0) {
+        const overdueHours = Math.abs(hoursLeft);
+
+        // Сразу после просрочки → сначала сотруднику (шанс исправить)
+        if (overdueHours <= 1) {
+          const sent = await wasReminderSent(task.id, null, 'emp_overdue_now', env);
+          if (!sent) {
+            await sendMessage(task.assigned_to,
+              `🚨 *Дедлайн прошёл!*
+
+📋 ${task.title}
+⏰ Был: ${formatDeadline(task.deadline)}
+
+Срочно обновите статус или свяжитесь с руководителем!`, env);
+            await markReminderSent(task.id, null, 'emp_overdue_now', env);
+          }
+        }
+
+        // Через 1ч после просрочки → если молчат, шефу
+        if (overdueHours >= 1 && overdueHours < 2) {
+          const sent = await wasReminderSent(task.id, null, 'boss_overdue_1h', env);
+          if (!sent) {
+            await sendMessage(task.created_by,
+              `🚨 *Задача просрочена!*
+
+📋 ${task.title}
+👨‍💼 ${task.emp_name}
+⏰ Дедлайн был: ${formatDeadline(task.deadline)}
+
+Сотрудник не обновил статус. Требуется ваше внимание!`, env);
+            await markReminderSent(task.id, null, 'boss_overdue_1h', env);
+          }
+        }
+
+        // Каждые сутки после просрочки → шефу (пока не закроют)
+        const daysOverdue = Math.floor(overdueHours / 24);
+        if (daysOverdue >= 1) {
+          const reminderKey = `boss_overdue_day_${daysOverdue}`;
+          const sent = await wasReminderSent(task.id, null, reminderKey, env);
+          if (!sent) {
+            const dayWord = daysOverdue === 1 ? 'день' : daysOverdue < 5 ? 'дня' : 'дней';
+            await sendMessage(task.created_by,
+              `🔴 *Задача просрочена на ${daysOverdue} ${dayWord}!*
+
+📋 ${task.title}
+👨‍💼 ${task.emp_name}
+⏰ Была: ${formatDeadline(task.deadline)}
+
+_Закройте или перенесите дедлайн._`, env);
+            await markReminderSent(task.id, null, reminderKey, env);
+          }
         }
       }
     }
@@ -1335,35 +1544,54 @@ async function checkTaskReminders(env) {
 
 async function checkMeetingReminders(env) {
   try {
-    const now = new Date();
-    
-    // Получаем встречи на ближайшие 2 часа
     const meetings = await env.DB.prepare(`
       SELECT m.id, m.title, m.meeting_datetime, m.location, m.created_by
       FROM meetings m
-      WHERE datetime(m.meeting_datetime) >= datetime('now')
-      AND datetime(m.meeting_datetime) <= datetime('now', '+2 hours')
+      WHERE datetime(m.meeting_datetime) >= datetime('now', '-1 hours')
+      AND datetime(m.meeting_datetime) <= datetime('now', '+25 hours')
     `).all();
-    
+
     for (const meeting of meetings.results) {
       const meetingTime = new Date(meeting.meeting_datetime);
-      const timeDiff = meetingTime - now;
-      const minutesDiff = timeDiff / (1000 * 60);
-      
-      // Напоминание за 1 час участникам
-      if (minutesDiff >= 55 && minutesDiff <= 65) {
-        const sent = await wasReminderSent(null, meeting.id, 'employee_1hour', env);
+      const now = new Date();
+      const minutesLeft = (meetingTime - now) / 60000;
+
+      // За 24 часа → всем участникам
+      if (minutesLeft >= 1410 && minutesLeft <= 1450) {
+        const sent = await wasReminderSent(null, meeting.id, 'meeting_24h', env);
         if (!sent) {
           const participants = await getMeetingParticipants(meeting.id, env);
-          for (const participant of participants) {
-            await sendMessage(
-              participant.user_id,
-              `📅 **Напоминание о встрече!**\n\n📌 ${meeting.title}\n⏰ Через **1 час**\n📍 ${meeting.location || 'Место не указано'}`,
-              env
-            );
+          for (const p of participants) {
+            await sendMessage(p.user_id,
+              `📅 **Напоминание о встрече!**\n\n📌 ${meeting.title}\n⏰ Завтра в ${formatTime(meeting.meeting_datetime)}\n📍 ${meeting.location || 'Место не указано'}`, env);
           }
-          await markReminderSent(null, meeting.id, 'employee_1hour', env);
-          console.log(`✅ Sent 1-hour meeting reminder for meeting ${meeting.id}`);
+          await markReminderSent(null, meeting.id, 'meeting_24h', env);
+        }
+      }
+
+      // За 1 час → всем участникам
+      if (minutesLeft >= 55 && minutesLeft <= 65) {
+        const sent = await wasReminderSent(null, meeting.id, 'meeting_1h', env);
+        if (!sent) {
+          const participants = await getMeetingParticipants(meeting.id, env);
+          for (const p of participants) {
+            await sendMessage(p.user_id,
+              `🔔 **Встреча через 1 час!**\n\n📌 ${meeting.title}\n⏰ ${formatDeadline(meeting.meeting_datetime)}\n📍 ${meeting.location || 'Место не указано'}`, env);
+          }
+          await markReminderSent(null, meeting.id, 'meeting_1h', env);
+        }
+      }
+
+      // За 15 минут → всем участникам
+      if (minutesLeft >= 12 && minutesLeft <= 18) {
+        const sent = await wasReminderSent(null, meeting.id, 'meeting_15min', env);
+        if (!sent) {
+          const participants = await getMeetingParticipants(meeting.id, env);
+          for (const p of participants) {
+            await sendMessage(p.user_id,
+              `⚡️ **Встреча через 15 минут!**\n\n📌 ${meeting.title}\n📍 ${meeting.location || 'Место не указано'}\n\nПора собираться! 🏃`, env);
+          }
+          await markReminderSent(null, meeting.id, 'meeting_15min', env);
         }
       }
     }
@@ -1993,14 +2221,20 @@ function createCalendarKeyboard(year, month, prefix = 'cal') {
     week.push({ text: ' ', callback_data: `${prefix}_ignore` });
   }
   
+  // Сбрасываем время у today чтобы сравнивать только даты
+  const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
   for (let day = 1; day <= daysInMonth; day++) {
     const date = new Date(year, month - 1, day);
     
-    if (date < today) {
+    if (date < todayDate) {
+      // Прошедшие дни - недоступны
       week.push({ text: '·', callback_data: `${prefix}_ignore` });
-    } else if (date.toDateString() === today.toDateString()) {
+    } else if (date.getTime() === todayDate.getTime()) {
+      // Сегодня - доступен (выделен скобками)
       week.push({ text: `[${day}]`, callback_data: `${prefix}_day_${year}_${month}_${day}` });
     } else {
+      // Будущие дни - доступны
       week.push({ text: String(day), callback_data: `${prefix}_day_${year}_${month}_${day}` });
     }
     
@@ -2030,15 +2264,16 @@ function createCalendarKeyboard(year, month, prefix = 'cal') {
 function createTimePickerKeyboard(prefix = 'time') {
   const keyboard = { inline_keyboard: [] };
   
-  const hours = ['09', '10', '11', '12', '13', '14', '15', '16', '17', '18'];
+  // Часы с 08:00 до 22:00
+  const hours = ['08','09','10','11','12','13','14','15','16','17','18','19','20','21','22'];
   
-  for (let i = 0; i < hours.length; i += 2) {
-    keyboard.inline_keyboard.push([
-      { text: `${hours[i]}:00`, callback_data: `${prefix}_${hours[i]}_00` },
-      { text: `${hours[i]}:30`, callback_data: `${prefix}_${hours[i]}_30` },
-      { text: `${hours[i+1]}:00`, callback_data: `${prefix}_${hours[i+1]}_00` },
-      { text: `${hours[i+1]}:30`, callback_data: `${prefix}_${hours[i+1]}_30` }
-    ]);
+  for (let i = 0; i < hours.length; i += 3) {
+    const row = [];
+    for (let j = i; j < Math.min(i + 3, hours.length); j++) {
+      row.push({ text: `${hours[j]}:00`, callback_data: `${prefix}_${hours[j]}_00` });
+      row.push({ text: `${hours[j]}:30`, callback_data: `${prefix}_${hours[j]}_30` });
+    }
+    if (row.length > 0) keyboard.inline_keyboard.push(row);
   }
   
   return keyboard;
@@ -2183,4 +2418,11 @@ function formatDate(date) {
   const year = date.getFullYear();
   
   return `${day}.${month}.${year}`;
+}
+
+function formatTime(datetime) {
+  const date = new Date(datetime);
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
 }
