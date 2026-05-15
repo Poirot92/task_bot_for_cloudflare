@@ -495,7 +495,7 @@ async function handleCreateOrg(chatId, userId, orgName, userFrom, env) {
     const keyboard = getBossKeyboard();
     await sendMessage(
       chatId,
-      `✅ Организация **${orgName}** создана!\n\n🔑 Код для сотрудников: `${result.paymentCode}`\n\nТеперь вы можете создавать задачи и приглашать сотрудников.`,
+      `✅ Организация *${orgName}* создана!\n\n🔑 Код для сотрудников: ${result.paymentCode}\n\nТеперь вы можете создавать задачи и приглашать сотрудников.`,
       env,
       keyboard
     );
@@ -754,7 +754,7 @@ async function handleShowOrgCode(chatId, user, env) {
     
     await sendMessage(
       chatId,
-      `🔑 **Код вашей организации:**\n\n`${org.payment_code}`\n\nОтправьте этот код сотрудникам для присоединения.`,
+      `🔑 *Код вашей организации:*\n\n${org.payment_code}\n\nОтправьте этот код сотрудникам для присоединения.`,
       env
     );
   } catch (error) {
