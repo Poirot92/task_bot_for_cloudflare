@@ -83,10 +83,31 @@ async function handleMessage(message, env) {
     
     // Обработка команд
     if (text === '/start') {
+      await clearState(userId, env);
       await handleStart(chatId, userId, username, firstName, user, env);
       return;
     }
-    
+
+    // Кнопки главного меню всегда имеют приоритет — сбрасываем любое залипшее состояние
+    const MENU_BUTTONS = [
+      '➕ Создать задачу', '📅 Назначить встречу',
+      '📆 Календарь', '⚠️ Просроченные',
+      '📊 Задачи команды', '👥 Моя команда',
+      '📋 Мои задачи', '📅 Мои встречи', 'ℹ️ Помощь'
+    ];
+
+    if (MENU_BUTTONS.includes(text)) {
+      // Если было какое-то состояние (например залипший календарь) — сбрасываем
+      if (state && state.state) {
+        console.log(`🔄 Menu button pressed during state ${state.state} — clearing state`);
+        await clearState(userId, env);
+      }
+      if (user) {
+        await handleMenuButtons(chatId, userId, text, user, env);
+      }
+      return;
+    }
+
     // Обработка состояний (ConversationHandler)
     if (state && state.state) {
       console.log(`🔄 Processing state: ${state.state}`);
@@ -249,8 +270,21 @@ async function handleCallbackQuery(callbackQuery, env) {
     if (data.startsWith('change_deadline_')) {
       const taskId = data.split('_')[2];
       await setState(userId, 'CHANGE_DEADLINE', { taskId }, env);
-      const calendar = createCalendarKeyboard(new Date().getFullYear(), new Date().getMonth() + 1, `dlcal_${taskId}_`);
+      let calendar = createCalendarKeyboard(new Date().getFullYear(), new Date().getMonth() + 1, `dlcal_${taskId}_`);
+      // Добавляем кнопку отмены внизу календаря
+      calendar.inline_keyboard.push([
+        { text: '❌ Отмена', callback_data: `cancel_deadline_${taskId}` }
+      ]);
       await sendMessage(chatId, '📅 Выберите новую дату дедлайна:', env, calendar);
+      return;
+    }
+
+    // Отмена изменения дедлайна
+    if (data.startsWith('cancel_deadline_')) {
+      await clearState(userId, env);
+      const taskId = data.split('_')[2];
+      await sendMessage(chatId, '❌ Изменение дедлайна отменено', env);
+      await handleViewTask(chatId, taskId, user, env);
       return;
     }
 
