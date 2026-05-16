@@ -266,12 +266,22 @@ async function handleCallbackQuery(callbackQuery, env) {
       return;
     }
 
+    // Вкладки задач команды
+    if (data === 'team_tasks_active') {
+      await handleShowTeamTasks(chatId, user, env, 'active');
+      return;
+    }
+
+    if (data === 'team_tasks_done') {
+      await handleShowTeamTasks(chatId, user, env, 'done');
+      return;
+    }
+
     // Изменение дедлайна
     if (data.startsWith('change_deadline_')) {
       const taskId = data.split('_')[2];
-      await setState(userId, 'CHANGE_DEADLINE', { taskId }, env);
+      // НЕ сохраняем состояние — taskId уже в callback_data каждой кнопки календаря
       let calendar = createCalendarKeyboard(new Date().getFullYear(), new Date().getMonth() + 1, `dlcal_${taskId}_`);
-      // Добавляем кнопку отмены внизу календаря
       calendar.inline_keyboard.push([
         { text: '❌ Отмена', callback_data: `cancel_deadline_${taskId}` }
       ]);
@@ -448,8 +458,9 @@ async function handleConversationState(chatId, userId, text, state, user, messag
         break;
 
       case 'CHANGE_DEADLINE':
-        // Дедлайн меняется через календарь, текст игнорируем
-        await sendMessage(chatId, '📅 Используйте календарь выше для выбора даты', env);
+        // Это состояние больше не используется — сбрасываем
+        await clearState(userId, env);
+        if (user) await handleMenuButtons(chatId, userId, text, user, env);
         break;
         
       default:
@@ -750,35 +761,38 @@ async function handleShowMyTasks(chatId, userId, env) {
   }
 }
 
-async function handleShowTeamTasks(chatId, user, env) {
+async function handleShowTeamTasks(chatId, user, env, filter = 'active') {
   try {
-    const tasks = await getFilteredTasks(user.org_id, null, null, env);
-    
+    const statusFilter = filter === 'active' ? ['pending', 'in_progress'] : ['completed'];
+    const tasks = await getFilteredTasks(user.org_id, statusFilter, null, env);
+
+    const tabKeyboard = {
+      inline_keyboard: [[
+        { text: filter === 'active' ? '🔴🟡 Активные ✓' : '🔴🟡 Активные', callback_data: 'team_tasks_active' },
+        { text: filter === 'done'   ? '🟢 Выполненные ✓' : '🟢 Выполненные', callback_data: 'team_tasks_done' }
+      ]]
+    };
+
     if (!tasks || tasks.length === 0) {
-      await sendMessage(chatId, '📭 Задач пока нет', env);
+      const emptyText = filter === 'active' ? '📭 Нет активных задач' : '📭 Нет выполненных задач';
+      await sendMessage(chatId, emptyText, env, tabKeyboard);
       return;
     }
-    
-    let text = '📊 **Задачи команды:**\n\n';
-    const keyboard = { inline_keyboard: [] };
-    
+
+    const header = filter === 'active' ? '🔴🟡 *Активные задачи команды:*\n\n' : '🟢 *Выполненные задачи команды:*\n\n';
+    let text = header;
+    const emoji = { pending: '🔴', in_progress: '🟡', completed: '🟢' };
+
     for (const task of tasks) {
-      const emoji = { pending: '🔴', in_progress: '🟡', completed: '🟢' };
-      text += `${emoji[task.status]} **${task.title}**\n`;
+      text += `${emoji[task.status]} *${task.title}*\n`;
       text += `   👨‍💼 ${task.emp_name}\n`;
-      if (task.deadline) {
-        text += `   📅 ${formatDeadline(task.deadline)}\n`;
-      }
+      if (task.deadline) text += `   📅 ${formatDeadline(task.deadline)}\n`;
       text += '\n';
-      
-      const displayTitle = task.title.length > 30 ? task.title.substring(0, 30) + '...' : task.title;
-      keyboard.inline_keyboard.push([{
-        text: `📖 ${displayTitle}`,
-        callback_data: `view_task_${task.id}`
-      }]);
+      const displayTitle = task.title.length > 28 ? task.title.substring(0, 28) + '...' : task.title;
+      tabKeyboard.inline_keyboard.push([{ text: `📖 ${displayTitle}`, callback_data: `view_task_${task.id}` }]);
     }
-    
-    await sendMessage(chatId, text, env, keyboard);
+
+    await sendMessage(chatId, text, env, tabKeyboard);
   } catch (error) {
     console.error('❌ Error in handleShowTeamTasks:', error.message);
     await sendMessage(chatId, '❌ Ошибка при загрузке задач команды', env);
@@ -1369,9 +1383,7 @@ async function handleConfirmMeetingParticipants(chatId, messageId, userId, user,
 
 async function handleDeadlineCalendarCallback(chatId, messageId, data, userId, env) {
   try {
-    // Format: dlcal_TASKID__day_YEAR_MONTH_DAY or dlcal_TASKID__prev_YEAR_MONTH etc
-    // We encode taskId in prefix: dlcal_TASKID_
-    // So data = dlcal_123_day_2026_5_20 → split by _ gives ['dlcal','123','day','2026','5','20']
+    // Format: dlcal_TASKID_day_YEAR_MONTH_DAY or dlcal_TASKID_prev_YEAR_MONTH
     const parts = data.split('_');
     const taskId = parts[1];
     const action = parts[2];
@@ -1381,16 +1393,9 @@ async function handleDeadlineCalendarCallback(chatId, messageId, data, userId, e
       const month = parseInt(parts[4]);
       const day   = parseInt(parts[5]);
 
-      const state = await getUserState(userId, env);
-      const stateData = state && state.data ? JSON.parse(state.data) : {};
-      stateData.year  = year;
-      stateData.month = month;
-      stateData.day   = day;
-      stateData.taskId = taskId;
-
-      const keyboard = createTimePickerKeyboard(`dltime_${taskId}`);
+      // Передаём дату через prefix кнопок времени — состояние не нужно
+      const keyboard = createTimePickerKeyboard(`dltime_${taskId}_${year}_${month}_${day}`);
       await editMessage(chatId, messageId, '⏰ Выберите новое время дедлайна:', env, keyboard);
-      await setState(userId, 'CHANGE_DEADLINE', stateData, env);
 
     } else if (action === 'prev' || action === 'next') {
       let year  = parseInt(parts[3]);
@@ -1404,7 +1409,10 @@ async function handleDeadlineCalendarCallback(chatId, messageId, data, userId, e
         if (month === 13) { month = 1; year++; }
       }
 
-      const calendar = createCalendarKeyboard(year, month, `dlcal_${taskId}_`);
+      let calendar = createCalendarKeyboard(year, month, `dlcal_${taskId}_`);
+      calendar.inline_keyboard.push([
+        { text: '❌ Отмена', callback_data: `cancel_deadline_${taskId}` }
+      ]);
       await editMessage(chatId, messageId, '📅 Выберите новую дату дедлайна:', env, calendar);
     }
   } catch (error) {
@@ -1414,19 +1422,19 @@ async function handleDeadlineCalendarCallback(chatId, messageId, data, userId, e
 
 async function handleDeadlineTimeCallback(chatId, messageId, data, userId, env) {
   try {
-    // Format: dltime_TASKID_HH_MM
+    // Format: dltime_TASKID_YEAR_MONTH_DAY_HH_MM
     const parts = data.split('_');
     const taskId = parts[1];
-    const hour   = parts[2];
-    const minute = parts[3];
-
-    const state = await getUserState(userId, env);
-    const stateData = state && state.data ? JSON.parse(state.data) : {};
+    const year   = parseInt(parts[2]);
+    const month  = parseInt(parts[3]);
+    const day    = parseInt(parts[4]);
+    const hour   = parts[5];
+    const minute = parts[6];
 
     const newDeadline = new Date(
-      stateData.year,
-      stateData.month - 1,
-      stateData.day,
+      year,
+      month - 1,
+      day,
       parseInt(hour),
       parseInt(minute)
     );
@@ -1441,8 +1449,6 @@ async function handleDeadlineTimeCallback(chatId, messageId, data, userId, env) 
     await env.DB.prepare(
       'DELETE FROM reminders_sent WHERE task_id = ?'
     ).bind(taskId).run();
-
-    await clearState(userId, env);
 
     // Получаем задачу чтобы уведомить сотрудника
     const task = await env.DB.prepare(`
@@ -1964,8 +1970,15 @@ async function getFilteredTasks(orgId, statusFilter, employeeId, env) {
     const params = [orgId];
     
     if (statusFilter) {
-      query += ' AND t.status = ?';
-      params.push(statusFilter);
+      if (Array.isArray(statusFilter)) {
+        // Массив статусов: ['pending', 'in_progress']
+        const placeholders = statusFilter.map(() => '?').join(', ');
+        query += ` AND t.status IN (${placeholders})`;
+        params.push(...statusFilter);
+      } else {
+        query += ' AND t.status = ?';
+        params.push(statusFilter);
+      }
     }
     
     if (employeeId) {
