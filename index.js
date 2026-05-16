@@ -244,6 +244,27 @@ async function handleCallbackQuery(callbackQuery, env) {
       await sendMessage(chatId, '🏠 Главное меню:', env, keyboard);
       return;
     }
+
+    // Изменение дедлайна
+    if (data.startsWith('change_deadline_')) {
+      const taskId = data.split('_')[2];
+      await setState(userId, 'CHANGE_DEADLINE', { taskId }, env);
+      const calendar = createCalendarKeyboard(new Date().getFullYear(), new Date().getMonth() + 1, `dlcal_${taskId}_`);
+      await sendMessage(chatId, '📅 Выберите новую дату дедлайна:', env, calendar);
+      return;
+    }
+
+    // Календарь для изменения дедлайна
+    if (data.startsWith('dlcal_')) {
+      await handleDeadlineCalendarCallback(chatId, messageId, data, userId, env);
+      return;
+    }
+
+    // Выбор времени для нового дедлайна
+    if (data.startsWith('dltime_')) {
+      await handleDeadlineTimeCallback(chatId, messageId, data, userId, env);
+      return;
+    }
     
     // Управление командой
     if (data === 'team_employees_list') {
@@ -371,10 +392,30 @@ async function handleConversationState(chatId, userId, text, state, user, messag
         const meetingCal = createCalendarKeyboard(new Date().getFullYear(), new Date().getMonth() + 1, 'mcal');
         await sendMessage(chatId, '📅 Выберите дату встречи:', env, meetingCal);
         break;
-        
+
+      case 'MEETING_DATE':
+        // Дата выбирается через календарь (inline кнопки), текст игнорируем
+        await sendMessage(chatId, '📅 Используйте кнопки календаря выше для выбора даты', env);
+        break;
+
+      case 'MEETING_TIME':
+        // Время выбирается через inline кнопки, текст игнорируем
+        await sendMessage(chatId, '⏰ Используйте кнопки выше для выбора времени', env);
+        break;
+
       case 'MEETING_LOCATION':
         console.log('📍 Setting meeting location');
         await handleMeetingLocation(chatId, userId, text, stateData, user, env);
+        break;
+
+      case 'MEETING_PARTICIPANTS':
+        // Участники выбираются через inline кнопки, текст игнорируем
+        await sendMessage(chatId, '👥 Используйте кнопки выше для выбора участников', env);
+        break;
+
+      case 'CHANGE_DEADLINE':
+        // Дедлайн меняется через календарь, текст игнорируем
+        await sendMessage(chatId, '📅 Используйте календарь выше для выбора даты', env);
         break;
         
       default:
@@ -1290,6 +1331,118 @@ async function handleConfirmMeetingParticipants(chatId, messageId, userId, user,
   }
 }
 
+// ==================== ИЗМЕНЕНИЕ ДЕДЛАЙНА ====================
+
+async function handleDeadlineCalendarCallback(chatId, messageId, data, userId, env) {
+  try {
+    // Format: dlcal_TASKID__day_YEAR_MONTH_DAY or dlcal_TASKID__prev_YEAR_MONTH etc
+    // We encode taskId in prefix: dlcal_TASKID_
+    // So data = dlcal_123_day_2026_5_20 → split by _ gives ['dlcal','123','day','2026','5','20']
+    const parts = data.split('_');
+    const taskId = parts[1];
+    const action = parts[2];
+
+    if (action === 'day') {
+      const year  = parseInt(parts[3]);
+      const month = parseInt(parts[4]);
+      const day   = parseInt(parts[5]);
+
+      const state = await getUserState(userId, env);
+      const stateData = state && state.data ? JSON.parse(state.data) : {};
+      stateData.year  = year;
+      stateData.month = month;
+      stateData.day   = day;
+      stateData.taskId = taskId;
+
+      const keyboard = createTimePickerKeyboard(`dltime_${taskId}`);
+      await editMessage(chatId, messageId, '⏰ Выберите новое время дедлайна:', env, keyboard);
+      await setState(userId, 'CHANGE_DEADLINE', stateData, env);
+
+    } else if (action === 'prev' || action === 'next') {
+      let year  = parseInt(parts[3]);
+      let month = parseInt(parts[4]);
+
+      if (action === 'prev') {
+        month--;
+        if (month === 0) { month = 12; year--; }
+      } else {
+        month++;
+        if (month === 13) { month = 1; year++; }
+      }
+
+      const calendar = createCalendarKeyboard(year, month, `dlcal_${taskId}_`);
+      await editMessage(chatId, messageId, '📅 Выберите новую дату дедлайна:', env, calendar);
+    }
+  } catch (error) {
+    console.error('❌ Error in handleDeadlineCalendarCallback:', error.message);
+  }
+}
+
+async function handleDeadlineTimeCallback(chatId, messageId, data, userId, env) {
+  try {
+    // Format: dltime_TASKID_HH_MM
+    const parts = data.split('_');
+    const taskId = parts[1];
+    const hour   = parts[2];
+    const minute = parts[3];
+
+    const state = await getUserState(userId, env);
+    const stateData = state && state.data ? JSON.parse(state.data) : {};
+
+    const newDeadline = new Date(
+      stateData.year,
+      stateData.month - 1,
+      stateData.day,
+      parseInt(hour),
+      parseInt(minute)
+    );
+    const deadlineStr = newDeadline.toISOString().slice(0, 16).replace('T', ' ');
+
+    // Обновляем дедлайн в БД
+    await env.DB.prepare(
+      'UPDATE tasks SET deadline = ? WHERE id = ?'
+    ).bind(deadlineStr, taskId).run();
+
+    // Сбрасываем напоминания чтобы они отправились заново с новым дедлайном
+    await env.DB.prepare(
+      'DELETE FROM reminders_sent WHERE task_id = ?'
+    ).bind(taskId).run();
+
+    await clearState(userId, env);
+
+    // Получаем задачу чтобы уведомить сотрудника
+    const task = await env.DB.prepare(`
+      SELECT t.*, u.first_name as emp_name
+      FROM tasks t JOIN users u ON t.assigned_to = u.id
+      WHERE t.id = ?
+    `).bind(taskId).first();
+
+    await editMessage(
+      chatId, messageId,
+      `✅ Дедлайн обновлён!
+
+📋 ${task ? task.title : 'Задача'}
+📅 Новый дедлайн: ${formatDeadline(deadlineStr)}`,
+      env
+    );
+
+    // Уведомляем сотрудника
+    if (task) {
+      await sendMessage(
+        task.assigned_to,
+        `📅 *Дедлайн задачи изменён!*
+
+📋 ${task.title}
+📅 Новый дедлайн: ${formatDeadline(deadlineStr)}`,
+        env
+      );
+    }
+  } catch (error) {
+    console.error('❌ Error in handleDeadlineTimeCallback:', error.message);
+    await sendMessage(chatId, '❌ Ошибка при изменении дедлайна', env);
+  }
+}
+
 // ==================== НАПОМИНАНИЯ (CRON) ====================
 
 async function checkReminders(env) {
@@ -2176,7 +2329,14 @@ function getTaskActionsKeyboard(taskId, status, role) {
     { text: '💬 Добавить комментарий', callback_data: `comment_${taskId}` }
   ]);
   
-  if (role === 'boss') {
+  if (role === 'boss' && status !== 'completed') {
+    keyboard.inline_keyboard.push([
+      { text: '📅 Изменить дедлайн', callback_data: `change_deadline_${taskId}` }
+    ]);
+    keyboard.inline_keyboard.push([
+      { text: '🗑 Удалить задачу', callback_data: `delete_task_${taskId}` }
+    ]);
+  } else if (role === 'boss') {
     keyboard.inline_keyboard.push([
       { text: '🗑 Удалить задачу', callback_data: `delete_task_${taskId}` }
     ]);
