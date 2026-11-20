@@ -109,30 +109,11 @@ Cron Triggers (каждые 15 минут) → напоминания
 
 ## 🚀 Деплой
 
-```bash
-# 1. Установи Wrangler
-npm install -g wrangler
-wrangler login
+Код Worker хранится в GitHub, ветка `main` — источник истины. Cloudflare Workers Builds автоматически собирает и развёртывает изменения из `main`.
 
-# 2. Создай D1 базу
-wrangler d1 create taskbot_db
-# Скопируй database_id в wrangler.toml
+Для изменений создавай отдельную ветку и Pull Request. Проверь diff и результат Preview-сборки, затем слей Pull Request в `main`. Не запускай `wrangler deploy` вручную и не создавай новую D1 базу: Production bindings, база и секреты уже настроены в Cloudflare.
 
-# 3. Примени схему
-wrangler d1 execute taskbot_db --file=schema.sql --remote
-
-# 4. Добавь токен бота
-wrangler secret put BOT_TOKEN
-
-# 5. Деплой
-npm install
-wrangler deploy
-
-# 6. Настрой webhook
-# Открой в браузере: https://твой-воркер.workers.dev/setup
-```
-
----
+Секреты и значения bindings не добавляй в GitHub. Изменения схемы или данных D1, webhook и production bindings требуют отдельной проверки.
 
 ## 💰 Стоимость
 
