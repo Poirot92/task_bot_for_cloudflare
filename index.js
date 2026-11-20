@@ -319,14 +319,14 @@ async function aiRouter(text, env) {
 }
 
 Для create_task:
-Если пользователь хочет создать задачу себе, укажи employee = "self". Если начальник назначает задачу сотруднику, укажи его имя.
+Если пользователь хочет создать задачу себе, укажи employee = "self". Если начальник назначает задачу сотруднику, укажи его имя. Для каждой задачи нужна дата дедлайна YYYY-MM-DD; если пользователь не назвал дату, передай due_date = null.
 
 {
   "action": "create_task",
   "parameters": {
     "employee": "self для себя или имя сотрудника",
     "title": "текст задачи",
-    "due_date": "YYYY-MM-DD или null"
+    "due_date": "обязательная дата YYYY-MM-DD, если пользователь не указал — null"
   }
 }
 
@@ -2603,15 +2603,40 @@ async function executeAIAction(route, user, env) {
     if (action === "create_task") {
       const requestedEmployee = String(parameters.employee || "").trim();
       const title = String(parameters.title || "").trim();
-      const deadline =
-        parameters.due_date ||
-        parameters.duedate ||
+      const deadlineValue =
+        parameters.due_date ??
+        parameters.duedate ??
         null;
+      const deadline =
+        deadlineValue === null ? "" : String(deadlineValue).trim();
 
       if (!title) {
         return {
           success: false,
           message: "❌ Не указана задача."
+        };
+      }
+
+      const datePattern = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+      const dateParts = /^(\d{4})-(\d{2})-(\d{2})/.exec(deadline);
+      const parsedDate = Date.parse(deadline.replace(" ", "T"));
+      const validCalendarDate = dateParts
+        ? (() => {
+            const year = Number(dateParts[1]);
+            const month = Number(dateParts[2]);
+            const day = Number(dateParts[3]);
+            const check = new Date(Date.UTC(year, month - 1, day));
+            return check.getUTCFullYear() === year &&
+              check.getUTCMonth() === month - 1 &&
+              check.getUTCDate() === day;
+          })()
+        : false;
+
+      if (!deadline || !datePattern.test(deadline) ||
+          !validCalendarDate || !Number.isFinite(parsedDate)) {
+        return {
+          success: false,
+          message: "⏳ Для AI-задачи обязательно нужен дедлайн. Повтори запрос целиком, указав дату в формате ГГГГ-ММ-ДД. Пока задача не создана."
         };
       }
 
