@@ -319,11 +319,12 @@ async function aiRouter(text, env) {
 }
 
 Для create_task:
+Если пользователь хочет создать задачу себе, укажи employee = "self". Если начальник назначает задачу сотруднику, укажи его имя.
 
 {
   "action": "create_task",
   "parameters": {
-    "employee": "имя сотрудника",
+    "employee": "self для себя или имя сотрудника",
     "title": "текст задачи",
     "due_date": "YYYY-MM-DD или null"
   }
@@ -2385,6 +2386,10 @@ const ACTION_POLICIES = {
   create_task: {
     boss: {
       scope: "organization"
+    },
+
+    employee: {
+      scope: "own"
     }
   },
 
@@ -2596,25 +2601,12 @@ async function executeAIAction(route, user, env) {
     // ==========================================================
 
     if (action === "create_task") {
-      const employeeName = parameters.employee;
-
-      const title = parameters.title;
-
+      const requestedEmployee = String(parameters.employee || "").trim();
+      const title = String(parameters.title || "").trim();
       const deadline =
         parameters.due_date ||
         parameters.duedate ||
         null;
-
-      // --------------------------------------------------------
-      // Проверяем параметры
-      // --------------------------------------------------------
-
-      if (!employeeName) {
-        return {
-          success: false,
-          message: "❌ Не указан сотрудник."
-        };
-      }
 
       if (!title) {
         return {
@@ -2623,61 +2615,90 @@ async function executeAIAction(route, user, env) {
         };
       }
 
-      // --------------------------------------------------------
-      // Находим сотрудника внутри организации
-      // --------------------------------------------------------
+      const normalizeName = (value) =>
+        String(value || "")
+          .trim()
+          .toLocaleLowerCase("ru")
+          .replace(/[.,!?]/g, "")
+          .replace(/\s+/g, " ");
 
-      const employeeResult = await resolveEmployee(
-        employeeName,
-        user.org_id,
-        user.id,
-        env
-      );
+      const selfAliases = new Set([
+        "self",
+        "me",
+        "myself",
+        "я",
+        "мне",
+        "себе",
+        "для себя",
+        "сам",
+        "сама",
+        "самому",
+        "самой"
+      ]);
 
-      if (!employeeResult.success) {
+      const requestedName = normalizeName(requestedEmployee);
+      const ownNames = [
+        user.first_name,
+        user.username
+      ].map(normalizeName).filter(Boolean);
+      const isSelf =
+        !requestedName ||
+        selfAliases.has(requestedName) ||
+        ownNames.includes(requestedName);
+
+      if (user.role === "employee" && !isSelf) {
         return {
           success: false,
-          message: `❌ ${employeeResult.error}`
+          message: "❌ Сотрудник может создавать задачи только для себя. Назначать задачи другим может руководитель."
         };
       }
 
-      const employee = employeeResult.user;
+      if (user.role === "boss" && !requestedName) {
+        return {
+          success: false,
+          message: "❓ Уточни, кому создать задачу: тебе или сотруднику?"
+        };
+      }
 
-      console.log(
-        "👤 AI resolved employee:",
-        JSON.stringify(employee)
-      );
+      let assignee = user;
 
-      // --------------------------------------------------------
-      // Создаём задачу
-      // --------------------------------------------------------
+      if (!isSelf) {
+        const employeeResult = await resolveEmployee(
+          requestedEmployee,
+          user.org_id,
+          user.id,
+          env
+        );
+
+        if (!employeeResult.success) {
+          return {
+            success: false,
+            message: `❌ ${employeeResult.error}`
+          };
+        }
+
+        assignee = employeeResult.user;
+      }
 
       await createTask(
         title,
         "",
         deadline,
         user.id,
-        employee.id,
+        assignee.id,
         user.org_id,
         env
       );
 
       console.log(
-        `✅ AI created task "${title}" for ${employee.first_name}`
+        `✅ AI created task "${title}" for user ${assignee.id} by user ${user.id}`
       );
-
-      // --------------------------------------------------------
-      // Возвращаем результат
-      // --------------------------------------------------------
 
       return {
         success: true,
-        message:
-          `✅ Задача «${title}» назначена ` +
-          `сотруднику ${employee.first_name}` +
-          (deadline
-            ? ` до ${deadline}.`
-            : ".")
+        message: isSelf
+          ? `✅ Задача «${title}» создана для тебя${deadline ? ` до ${deadline}.` : "."}`
+          : `✅ Задача «${title}» назначена сотруднику ${assignee.first_name}${deadline ? ` до ${deadline}.` : "."}`
       };
     }
 
