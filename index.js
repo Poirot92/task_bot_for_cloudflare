@@ -319,6 +319,7 @@ async function aiRouter(text, env) {
 }
 
 Для create_task:
+Если пользователь хочет создать задачу себе, укажи employee = "self". Если начальник назначает задачу сотруднику, укажи его имя.
 
 {
   "action": "create_task",
@@ -2619,7 +2620,7 @@ async function executeAIAction(route, user, env) {
           .trim()
           .toLocaleLowerCase("ru")
           .replace(/[.,!?]/g, "")
-          .replace(/\\s+/g, " ");
+          .replace(/\s+/g, " ");
 
       const selfAliases = new Set([
         "self",
