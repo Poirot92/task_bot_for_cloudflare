@@ -1,7 +1,3 @@
---2e50b3aeb54b8b9974157c12e7b39b1d9370b23053f23ad47181d6f779a9
-Content-Disposition: form-data; name="index.js"; filename="index.js"
-Content-Type: application/javascript+module
-
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
@@ -4264,5 +4260,3 @@ export {
   repo_default as default
 };
 //# sourceMappingURL=index.js.map
-
---2e50b3aeb54b8b9974157c12e7b39b1d9370b23053f23ad47181d6f779a9--
