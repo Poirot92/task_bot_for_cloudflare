@@ -16,3 +16,7 @@ crons = ["*/15 * * * *"]
 # Environment variables (секреты добавляются через wrangler secret)
 [vars]
 # BOT_TOKEN добавляется через: wrangler secret put BOT_TOKEN
+
+# Workers AI is available to Preview deployments without a staging resource.
+[previews.ai]
+binding = "AI"
