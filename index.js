@@ -426,15 +426,36 @@ async function aiRouter(text, env) {
     const actionAliases = {
       createtask: "create_task",
       create_task: "create_task",
+      createtaskself: "create_task",
+      createtaskforself: "create_task",
+      createselftask: "create_task",
+      createtaskforme: "create_task",
+      create_task_self: "create_task",
+      create_task_for_self: "create_task",
+      create_self_task: "create_task",
 
       findtask: "find_task",
       find_task: "find_task",
 
       getmytasks: "get_my_tasks",
       get_my_tasks: "get_my_tasks",
+      mytasks: "get_my_tasks",
+      my_tasks: "get_my_tasks",
+      gettasks: "get_my_tasks",
+      get_tasks: "get_my_tasks",
+      listmytasks: "get_my_tasks",
+      list_my_tasks: "get_my_tasks",
+      showmytasks: "get_my_tasks",
+      show_my_tasks: "get_my_tasks",
 
       getteamtasks: "get_team_tasks",
-      get_team_tasks: "get_team_tasks",      
+      get_team_tasks: "get_team_tasks",
+      teamtasks: "get_team_tasks",
+      team_tasks: "get_team_tasks",
+      listteamtasks: "get_team_tasks",
+      list_team_tasks: "get_team_tasks",
+      showteamtasks: "get_team_tasks",
+      show_team_tasks: "get_team_tasks",
 
       getemployeetasks: "get_employee_tasks",
       get_employee_tasks: "get_employee_tasks",
@@ -454,7 +475,11 @@ async function aiRouter(text, env) {
       .toLowerCase()
       .replace(/[\s-]/g, "");
 
-    const action = actionAliases[rawAction] || "unknown";
+    const compactAction = rawAction.replace(/_/g, "");
+    const action =
+      actionAliases[rawAction] ||
+      actionAliases[compactAction] ||
+      "unknown";
 
     const normalized = {
       action,
@@ -2479,6 +2504,13 @@ function checkPermission(action, user) {
       };
     }
 
+    if (action === "unknown") {
+      return {
+        allowed: false,
+        message: "🤔 Не распознал действие. Скажи, например: «создай задачу себе» или «покажи мои задачи»."
+      };
+    }
+
     const actionPolicy = ACTION_POLICIES[action];
 
     if (!actionPolicy) {
@@ -2492,7 +2524,10 @@ function checkPermission(action, user) {
       };
     }
 
-    const rolePolicy = actionPolicy[user.role];
+    const normalizedRole = String(user.role || "")
+      .trim()
+      .toLowerCase();
+    const rolePolicy = actionPolicy[normalizedRole];
 
     if (!rolePolicy) {
       console.log(
