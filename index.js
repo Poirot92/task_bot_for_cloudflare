@@ -2205,7 +2205,7 @@ async function checkPendingAIDeadlineClarifications(env) {
       if (!Number.isFinite(askedAt) || !pending.title) continue;
 
       const elapsedMs = now.getTime() - askedAt;
-      if (elapsedMs >= 24 * 60 * 60 * 1000) {
+      if (elapsedMs >= 24 * 60 * 60 * 1000 && !pending.autoAttemptedAt) {
         const user = await getUser(row.user_id, env);
         if (!user) {
           await clearState(row.user_id, env);
@@ -2219,10 +2219,15 @@ async function checkPendingAIDeadlineClarifications(env) {
             due_date: getNextTashkentTenDeadline(now)
           }
         }, user, env);
-        await clearState(row.user_id, env);
+        if (result.success) {
+          await clearState(row.user_id, env);
+        } else {
+          pending.autoAttemptedAt = now.toISOString();
+          await setState(row.user_id, "AI_TASK_DEADLINE", pending, env);
+        }
         const message = result.success
           ? `⏰ Не получил дату за 24 часа, поэтому поставил автоматический дедлайн на 10:00 по Ташкенту.\n\n${result.message}`
-          : `⚠️ Не смог создать задачу автоматически: ${result.message}`;
+          : `⚠️ Не смог создать задачу автоматически: ${result.message} Ответь датой, чтобы завершить создание.`;
         await sendMessage(row.user_id, message, env);
         continue;
       }
