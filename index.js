@@ -256,9 +256,66 @@ async function askAI(text, env) {
   }
 }
 
+function routeExplicitSelfTask(text) {
+  const input = String(text || "").trim();
+  const startsCreateTask = /^(?:(?:пожалуйста)[, ]*)?(?:создай|создать|поставь|добавь)\s+(?:(?:мне|себе)\s+)?задач[уы]\b/i.test(input);
+  const explicitlySelf = /\bзадач[уы]\s+(?:себе|для себя)\b/i.test(input) ||
+    /^(?:(?:пожалуйста)[, ]*)?(?:создай|создать|поставь|добавь)\s+мне\s+задач[уы]\b/i.test(input);
+  if (!startsCreateTask || !explicitlySelf) return null;
+
+  let remainder = input
+    .replace(/^(?:(?:пожалуйста)[, ]*)?(?:создай|создать|поставь|добавь)\s+(?:(?:мне|себе)\s+)?задач[уы]\b\s*/i, "")
+    .replace(/^(?:себе|для себя|мне)\b\s*/i, "")
+    .replace(/^мне\s+(?:нужно|надо)\s+/i, "");
+
+  let dueDate = null;
+  const isoDate = /\b(\d{4})-(\d{2})-(\d{2})\b/.exec(remainder);
+  const numericDate = /\b(\d{1,2})[./](\d{1,2})(?:[./](\d{4}))?\b/.exec(remainder);
+  const relativeDate = /\b(?:до\s+)?(послезавтра|завтра|сегодня)\b/i.exec(remainder);
+
+  if (isoDate) {
+    dueDate = isoDate[0];
+    remainder = remainder.replace(isoDate[0], " ");
+  } else if (numericDate) {
+    const nowParts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Tashkent", year: "numeric"
+    }).formatToParts(new Date());
+    const currentYear = Number(nowParts.find((part) => part.type === "year")?.value);
+    const year = numericDate[3] ? Number(numericDate[3]) : currentYear;
+    dueDate = `${year}-${String(Number(numericDate[2])).padStart(2, "0")}-${String(Number(numericDate[1])).padStart(2, "0")}`;
+    remainder = remainder.replace(numericDate[0], " ");
+  } else if (relativeDate) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit"
+    }).formatToParts(new Date());
+    const year = Number(parts.find((part) => part.type === "year")?.value);
+    const month = Number(parts.find((part) => part.type === "month")?.value);
+    const day = Number(parts.find((part) => part.type === "day")?.value);
+    const offset = relativeDate[1].toLowerCase() === "послезавтра" ? 2 :
+      relativeDate[1].toLowerCase() === "завтра" ? 1 : 0;
+    const date = new Date(Date.UTC(year, month - 1, day + offset));
+    dueDate = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+    remainder = remainder.replace(relativeDate[0], " ");
+  }
+
+  const title = remainder
+    .replace(/\bдо\b/gi, " ")
+    .replace(/\bмне\s+(?:нужно|надо)\s+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  console.log("🧭 Explicit self-task route:", JSON.stringify({title, dueDate}));
+  return {
+    action: "create_task",
+    parameters: {employee: "self", title, due_date: dueDate}
+  };
+}
+
 async function aiRouter(text, env) {
   try {
     console.log("🧠 AI ROUTER INPUT:", text);
+    const explicitSelfTask = routeExplicitSelfTask(text);
+    if (explicitSelfTask) return explicitSelfTask;
 
     const result = await env.AI.run(
       "@cf/openai/gpt-oss-20b",
