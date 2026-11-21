@@ -238,6 +238,7 @@ async function handleMessage(message, env, updateId = null) {
       "\u274C \u041F\u0440\u043E\u0438\u0437\u043E\u0448\u043B\u0430 \u043E\u0448\u0438\u0431\u043A\u0430. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u043F\u043E\u0437\u0436\u0435.",
       env
     );
+    if (error?.retryableWebhook) throw error;
   }
 }
 
@@ -812,6 +813,7 @@ async function handleCallbackQuery(callbackQuery, env, updateId = null) {
     console.error("\u274C Error in handleCallbackQuery:", error.message);
     console.error("Stack:", error.stack);
     await sendMessage(chatId, "\u274C \u041F\u0440\u043E\u0438\u0437\u043E\u0448\u043B\u0430 \u043E\u0448\u0438\u0431\u043A\u0430. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u043F\u043E\u0437\u0436\u0435.", env);
+    if (data === "confirm_employees" || error?.retryableWebhook) throw error;
   }
 }
 __name(handleCallbackQuery, "handleCallbackQuery");
@@ -1975,7 +1977,7 @@ async function checkReminders(env) {
   console.log("\u23F0 Checking reminders...");
   try {
     await dispatchNotificationOutbox(env);
-    await env.DB.prepare("DELETE FROM processed_updates WHERE status = 'processed' AND updated_at < datetime('now', '-30 days')").run();
+    await env.DB.prepare("DELETE FROM processed_updates WHERE status IN ('processed', 'failed') AND updated_at < datetime('now', '-30 days')").run();
     await checkTaskReminders(env);
     await checkMeetingReminders(env);
     await checkPendingAIDeadlineClarifications(env);
@@ -2600,6 +2602,7 @@ async function createTask(title, description, deadline, createdBy, assignedTo, o
     return task;
   } catch (error) {
     console.error("\u274C Error creating task:", error.message);
+    error.retryableWebhook = true;
     throw error;
   }
 }
@@ -2648,7 +2651,6 @@ async function dispatchNotificationOutbox(env, limit = 10) {
   }
 }
 __name(dispatchNotificationOutbox, "dispatchNotificationOutbox");
-__name(createTask, "createTask");
 
 // ============================================================
 // 🔐 AI POLICY ENGINE
@@ -3556,6 +3558,7 @@ async function executeAIAction(route, user, env, updateId = null) {
       "❌ AI ACTION STACK:",
       error.stack
     );
+    if (error?.retryableWebhook) throw error;
 
     return {
       success: false,
