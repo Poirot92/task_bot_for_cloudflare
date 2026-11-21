@@ -2125,7 +2125,7 @@ _\u0421\u0442\u0430\u0442\u0443\u0441: \u0434\u0430\u0436\u0435 \u043D\u0435 \u0
       }
       if (hoursLeft < 0) {
         const overdueHours = Math.abs(hoursLeft);
-        if (overdueHours <= 1) {
+        if (overdueHours > 0) {
           const sent = await wasReminderSent(task.id, null, "emp_overdue_now", env);
           if (!sent) {
             await sendMessage(
@@ -2141,7 +2141,7 @@ _\u0421\u0442\u0430\u0442\u0443\u0441: \u0434\u0430\u0436\u0435 \u043D\u0435 \u0
             await markReminderSent(task.id, null, "emp_overdue_now", env);
           }
         }
-        if (overdueHours >= 1 && overdueHours < 2) {
+        if (overdueHours >= 1) {
           const sent = await wasReminderSent(task.id, null, "boss_overdue_1h", env);
           if (!sent) {
             await sendMessage(
