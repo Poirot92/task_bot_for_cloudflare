@@ -784,6 +784,23 @@ async function handleCallbackQuery(callbackQuery, env) {
   }
 }
 __name(handleCallbackQuery, "handleCallbackQuery");
+async function handleAIDeadlineClarification(chatId, userId, text, pending, user, env) {
+  const parsed = routeExplicitSelfTask(`Создай задачу себе ${text}`);
+  const deadline = parsed?.parameters?.due_date;
+  if (!deadline) {
+    await sendMessage(chatId, "📅 Не распознал дату. Ответь, например: «завтра», «22.11.2026» или «2026-11-22». Если не ответишь, напомню через 30 минут; через 24 часа задача создастся автоматически со сроком на 10:00 по Ташкенту.", env);
+    return;
+  }
+  const result = await executeAIAction({
+    action: "create_task",
+    parameters: {employee: pending.employee, title: pending.title, due_date: deadline}
+  }, user, env);
+  if (result.success || !String(result.message || "").includes("обязательно нужен дедлайн")) {
+    await clearState(userId, env);
+  }
+  await sendMessage(chatId, result.message, env, result.keyboard);
+}
+
 async function handleConversationState(chatId, userId, text, state, user, message, env) {
   const stateName = state.state;
   const stateData = state.data ? JSON.parse(state.data) : {};
@@ -799,6 +816,9 @@ async function handleConversationState(chatId, userId, text, state, user, messag
         await setState(userId, "CREATE_TASK_DEADLINE", { description: text }, env);
         const calendar = createCalendarKeyboard((/* @__PURE__ */ new Date()).getFullYear(), (/* @__PURE__ */ new Date()).getMonth() + 1);
         await sendMessage(chatId, "\u{1F4C5} \u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0434\u0435\u0434\u043B\u0430\u0439\u043D \u0437\u0430\u0434\u0430\u0447\u0438:", env, calendar);
+        break;
+      case "AI_TASK_DEADLINE":
+        await handleAIDeadlineClarification(chatId, userId, text, stateData, user, env);
         break;
       case "ADD_COMMENT":
         console.log("\u{1F4AC} Adding comment to task:", stateData.taskId);
@@ -1925,6 +1945,7 @@ async function checkReminders(env) {
   try {
     await checkTaskReminders(env);
     await checkMeetingReminders(env);
+    await checkPendingAIDeadlineClarifications(env);
   } catch (error) {
     console.error("\u274C Error in checkReminders:", error.message);
   }
@@ -2164,6 +2185,75 @@ _\u0417\u0430\u043A\u0440\u043E\u0439\u0442\u0435 \u0438\u043B\u0438 \u043F\u043
   }
 }
 __name(checkTaskReminders, "checkTaskReminders");
+async function checkPendingAIDeadlineClarifications(env) {
+  try {
+    await createUserStatesTable(env);
+    const pendingRows = await env.DB.prepare(
+      "SELECT user_id, data FROM user_states WHERE state = ?"
+    ).bind("AI_TASK_DEADLINE").all();
+    const now = new Date();
+
+    for (const row of pendingRows.results || []) {
+      let pending;
+      try {
+        pending = JSON.parse(row.data || "{}");
+      } catch (error) {
+        console.error("❌ Invalid AI deadline state:", error.message);
+        continue;
+      }
+      const askedAt = Date.parse(pending.askedAt || "");
+      if (!Number.isFinite(askedAt) || !pending.title) continue;
+
+      const elapsedMs = now.getTime() - askedAt;
+      if (elapsedMs >= 24 * 60 * 60 * 1000) {
+        const user = await getUser(row.user_id, env);
+        if (!user) {
+          await clearState(row.user_id, env);
+          continue;
+        }
+        const result = await executeAIAction({
+          action: "create_task",
+          parameters: {
+            employee: pending.employee,
+            title: pending.title,
+            due_date: getNextTashkentTenDeadline(now)
+          }
+        }, user, env);
+        await clearState(row.user_id, env);
+        const message = result.success
+          ? `⏰ Не получил дату за 24 часа, поэтому поставил автоматический дедлайн на 10:00 по Ташкенту.\n\n${result.message}`
+          : `⚠️ Не смог создать задачу автоматически: ${result.message}`;
+        await sendMessage(row.user_id, message, env);
+        continue;
+      }
+
+      if (elapsedMs >= 30 * 60 * 1000 && !pending.remindedAt) {
+        pending.remindedAt = now.toISOString();
+        await setState(row.user_id, "AI_TASK_DEADLINE", pending, env);
+        await sendMessage(row.user_id, `⏰ Напоминаю: у задачи «${pending.title}» ещё нет дедлайна. Ответь датой, например «завтра» или «2026-11-22». Через 24 часа без ответа я создам задачу со сроком на 10:00 по Ташкенту.`, env);
+      }
+    }
+  } catch (error) {
+    console.error("❌ Error checking pending AI deadlines:", error.message);
+  }
+}
+__name(checkPendingAIDeadlineClarifications, "checkPendingAIDeadlineClarifications");
+
+function getNextTashkentTenDeadline(referenceDate) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit",
+    day: "2-digit", hour: "2-digit", hourCycle: "h23"
+  }).formatToParts(referenceDate || new Date());
+  const year = Number(parts.find((part) => part.type === "year")?.value);
+  const month = Number(parts.find((part) => part.type === "month")?.value);
+  const day = Number(parts.find((part) => part.type === "day")?.value);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value);
+  const date = new Date(Date.UTC(year, month - 1, day + (hour >= 10 ? 1 : 0)));
+  const localDate = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+  return `${localDate}T10:00:00+05:00`;
+}
+__name(getNextTashkentTenDeadline, "getNextTashkentTenDeadline");
+
 async function checkMeetingReminders(env) {
   try {
     const meetings = await env.DB.prepare(`
@@ -2726,9 +2816,21 @@ async function executeAIAction(route, user, env) {
 
       if (!deadline || !datePattern.test(deadline) ||
           !validCalendarDate || !Number.isFinite(parsedDate)) {
+        if (user.role === "boss" && !requestedEmployee) {
+          return {
+            success: false,
+            message: "❓ Укажи, кому создать задачу, и добавь дату дедлайна."
+          };
+        }
+        await setState(user.id, "AI_TASK_DEADLINE", {
+          title,
+          employee: requestedEmployee || "self",
+          askedAt: new Date().toISOString(),
+          remindedAt: null
+        }, env);
         return {
-          success: false,
-          message: "⏳ Для AI-задачи обязательно нужен дедлайн. Повтори запрос целиком, указав дату в формате ГГГГ-ММ-ДД. Пока задача не создана."
+          success: true,
+          message: `📅 Для задачи «${title}» укажи дедлайн датой (например, «завтра» или «2026-11-22»). Если ответа не будет, напомню через 30 минут; через 24 часа задача создастся автоматически со сроком на 10:00 по Ташкенту.`
         };
       }
 
@@ -4372,6 +4474,14 @@ function formatDeadline(deadline) {
   if (!deadline)
     return "";
   const date = new Date(deadline);
+  if (/(?:Z|[+-]\\d{2}:\\d{2})$/i.test(String(deadline).trim())) {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit",
+      year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+    }).formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.day}.${values.month}.${values.year} ${values.hour}:${values.minute}`;
+  }
   const day = String(date.getDate()).padStart(2, "0");
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const year = date.getFullYear();
