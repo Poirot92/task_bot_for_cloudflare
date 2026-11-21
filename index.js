@@ -258,20 +258,20 @@ async function askAI(text, env) {
 
 function routeExplicitSelfTask(text) {
   const input = String(text || "").trim();
-  const startsCreateTask = /^(?:(?:пожалуйста)[, ]*)?(?:создай|создать|поставь|добавь)\\s+(?:(?:мне|себе)\\s+)?задач[уы](?=\\s|$)/i.test(input);
-  const explicitlySelf = /задач[уы]\\s+(?:себе|для себя)(?=\\s|$)/i.test(input) ||
-    /^(?:(?:пожалуйста)[, ]*)?(?:создай|создать|поставь|добавь)\\s+мне\\s+задач[уы](?=\\s|$)/i.test(input);
+  const startsCreateTask = /^(?:(?:пожалуйста)[, ]*)?(?:создай|создать|поставь|добавь)\s+(?:(?:мне|себе)\s+)?задач[уы](?=\s|$)/i.test(input);
+  const explicitlySelf = /задач[уы]\s+(?:себе|для себя)(?=\s|$)/i.test(input) ||
+    /^(?:(?:пожалуйста)[, ]*)?(?:создай|создать|поставь|добавь)\s+мне\s+задач[уы](?=\s|$)/i.test(input);
   if (!startsCreateTask || !explicitlySelf) return null;
 
   let remainder = input
-    .replace(/^(?:(?:пожалуйста)[, ]*)?(?:создай|создать|поставь|добавь)\\s+(?:(?:мне|себе)\\s+)?задач[уы](?=\\s|$)\\s*/i, "")
-    .replace(/^(?:себе|для себя|мне)\\s*/i, "")
-    .replace(/^мне\\s+(?:нужно|надо)\\s+/i, "");
+    .replace(/^(?:(?:пожалуйста)[, ]*)?(?:создай|создать|поставь|добавь)\s+(?:(?:мне|себе)\s+)?задач[уы](?=\s|$)\s*/i, "")
+    .replace(/^(?:себе|для себя|мне)\s*/i, "")
+    .replace(/^мне\s+(?:нужно|надо)\s+/i, "");
 
   let dueDate = null;
-  const isoDate = /\\b(\\d{4})-(\\d{2})-(\\d{2})\\b/.exec(remainder);
-  const numericDate = /\\b(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{4}))?\\b/.exec(remainder);
-  const relativeDate = /(?:^|\\s)(?:до\\s+)?(послезавтра|завтра|сегодня)(?=\\s|$)/i.exec(remainder);
+  const isoDate = /\b(\d{4})-(\d{2})-(\d{2})\b/.exec(remainder);
+  const numericDate = /\b(\d{1,2})[./](\d{1,2})(?:[./](\d{4}))?\b/.exec(remainder);
+  const relativeDate = /(?:^|\s)(?:до\s+)?(послезавтра|завтра|сегодня)(?=\s|$)/i.exec(remainder);
 
   if (isoDate) {
     dueDate = isoDate[0];
@@ -299,9 +299,9 @@ function routeExplicitSelfTask(text) {
   }
 
   const title = remainder
-    .replace(/(?:^|\\s)до(?=\\s)/gi, " ")
-    .replace(/мне\\s+(?:нужно|надо)\\s+/gi, " ")
-    .replace(/\\s+/g, " ")
+    .replace(/(?:^|\s)до(?=\s)/gi, " ")
+    .replace(/мне\s+(?:нужно|надо)\s+/gi, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
   console.log("🧭 Explicit self-task route:", JSON.stringify({title, dueDate}));
