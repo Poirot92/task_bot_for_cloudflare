@@ -4474,7 +4474,7 @@ function formatDeadline(deadline) {
   if (!deadline)
     return "";
   const date = new Date(deadline);
-  if (/(?:Z|[+-]\\d{2}:\\d{2})$/i.test(String(deadline).trim())) {
+  if (/(?:Z|[+-]\d{2}:\d{2})$/i.test(String(deadline).trim())) {
     const parts = new Intl.DateTimeFormat("en-GB", {
       timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit",
       year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23"
