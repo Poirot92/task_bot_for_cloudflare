@@ -788,7 +788,7 @@ async function handleAIDeadlineClarification(chatId, userId, text, pending, user
   const parsed = routeExplicitSelfTask(`Создай задачу себе ${text}`);
   const deadline = parsed?.parameters?.due_date;
   if (!deadline) {
-    await sendMessage(chatId, "📅 Не распознал дату. Ответь, например: «завтра», «22.11.2026» или «2026-11-22». Если не ответишь, напомню через 30 минут; через 24 часа задача создастся автоматически со сроком на 10:00 по Ташкенту.", env);
+    await sendMessage(chatId, "📅 Не распознал дату. Ответь, например: «завтра», «22.11.2026» или «2026-11-22».", env);
     return;
   }
   const result = await executeAIAction({
@@ -2235,7 +2235,7 @@ async function checkPendingAIDeadlineClarifications(env) {
       if (elapsedMs >= 30 * 60 * 1000 && !pending.remindedAt) {
         pending.remindedAt = now.toISOString();
         await setState(row.user_id, "AI_TASK_DEADLINE", pending, env);
-        await sendMessage(row.user_id, `⏰ Напоминаю: у задачи «${pending.title}» ещё нет дедлайна. Ответь датой, например «завтра» или «2026-11-22». Через 24 часа без ответа я создам задачу со сроком на 10:00 по Ташкенту.`, env);
+        await sendMessage(row.user_id, `⏰ Напоминаю: у задачи «${pending.title}» ещё нет дедлайна. Ответь датой, например «завтра» или «2026-11-22».`, env);
       }
     }
   } catch (error) {
@@ -2835,7 +2835,7 @@ async function executeAIAction(route, user, env) {
         }, env);
         return {
           success: true,
-          message: `📅 Для задачи «${title}» укажи дедлайн датой (например, «завтра» или «2026-11-22»). Если ответа не будет, напомню через 30 минут; через 24 часа задача создастся автоматически со сроком на 10:00 по Ташкенту.`
+          message: `📅 Для задачи «${title}» укажи дедлайн датой (например, «завтра» или «2026-11-22»).`
         };
       }
 
