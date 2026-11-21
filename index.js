@@ -7,12 +7,41 @@ var repo_default = {
     const url = new URL(request.url);
     console.log(`\u{1F4E5} Request: ${request.method} ${url.pathname}`);
     if (url.pathname === "/webhook" && request.method === "POST") {
+      let updateId = null;
       try {
         const update = await request.json();
+        updateId = Number.isSafeInteger(update?.update_id) ? update.update_id : null;
+        if (updateId !== null) {
+          const claim = await env.DB.prepare(`
+            INSERT INTO processed_updates (update_id, status, updated_at)
+            VALUES (?, 'processing', datetime('now'))
+            ON CONFLICT(update_id) DO UPDATE SET
+              status = 'processing', updated_at = datetime('now')
+            WHERE processed_updates.status = 'failed'
+              OR (processed_updates.status = 'processing'
+                AND datetime(processed_updates.updated_at) <= datetime('now', '-5 minutes'))
+            RETURNING update_id
+          `).bind(updateId).first();
+          if (!claim) return new Response("OK", { status: 200 });
+        }
         console.log("\u{1F4E8} Received update from Telegram");
-        await handleTelegramUpdate(update, env);
+        await handleTelegramUpdate(update, env, updateId);
+        if (updateId !== null) {
+          await env.DB.prepare(
+            "UPDATE processed_updates SET status = 'processed', updated_at = datetime('now') WHERE update_id = ?"
+          ).bind(updateId).run();
+        }
         return new Response("OK", { status: 200 });
       } catch (error) {
+        if (updateId !== null) {
+          try {
+            await env.DB.prepare(
+              "UPDATE processed_updates SET status = 'failed', updated_at = datetime('now') WHERE update_id = ?"
+            ).bind(updateId).run();
+          } catch (stateError) {
+            console.error("Could not save Telegram update failure:", stateError.message);
+          }
+        }
         console.error("\u274C Error handling update:", error.message);
         console.error("Stack:", error.stack);
         return new Response("Error: " + error.message, { status: 500 });
@@ -40,18 +69,18 @@ var repo_default = {
     ctx.waitUntil(checkReminders(env));
   }
 };
-async function handleTelegramUpdate(update, env) {
+async function handleTelegramUpdate(update, env, updateId = null) {
   if (update.message) {
-    await handleMessage(update.message, env);
+    await handleMessage(update.message, env, updateId);
   }
   if (update.callback_query) {
-    await handleCallbackQuery(update.callback_query, env);
+    await handleCallbackQuery(update.callback_query, env, updateId);
   }
 }
 
 __name(handleTelegramUpdate, "handleTelegramUpdate");
 
-async function handleMessage(message, env) {
+async function handleMessage(message, env, updateId = null) {
   const chatId = message.chat.id;
   const text = message.text || "";
   const userId = message.from.id;
@@ -144,7 +173,8 @@ async function handleMessage(message, env) {
         state,
         user,
         message,
-        env
+        env,
+        updateId
       );
 
       return;
@@ -161,7 +191,8 @@ async function handleMessage(message, env) {
       const result = await executeAIAction(
         route,
         user,
-        env
+        env,
+        updateId
       );
 
       await sendMessage(
@@ -207,6 +238,7 @@ async function handleMessage(message, env) {
       "\u274C \u041F\u0440\u043E\u0438\u0437\u043E\u0448\u043B\u0430 \u043E\u0448\u0438\u0431\u043A\u0430. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u043F\u043E\u0437\u0436\u0435.",
       env
     );
+    if (error?.retryableWebhook) throw error;
   }
 }
 
@@ -561,7 +593,7 @@ async function aiRouter(text, env) {
 }
 
 __name(handleMessage, "handleMessage");
-async function handleCallbackQuery(callbackQuery, env) {
+async function handleCallbackQuery(callbackQuery, env, updateId = null) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
   const data = callbackQuery.data;
@@ -608,7 +640,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       return;
     }
     if (data === "confirm_employees") {
-      await handleConfirmEmployees(chatId, messageId, userId, user, env);
+      await handleConfirmEmployees(chatId, messageId, userId, user, env, updateId);
       return;
     }
     if (data.startsWith("view_task_")) {
@@ -781,10 +813,11 @@ async function handleCallbackQuery(callbackQuery, env) {
     console.error("\u274C Error in handleCallbackQuery:", error.message);
     console.error("Stack:", error.stack);
     await sendMessage(chatId, "\u274C \u041F\u0440\u043E\u0438\u0437\u043E\u0448\u043B\u0430 \u043E\u0448\u0438\u0431\u043A\u0430. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u043F\u043E\u0437\u0436\u0435.", env);
+    if (data === "confirm_employees" || error?.retryableWebhook) throw error;
   }
 }
 __name(handleCallbackQuery, "handleCallbackQuery");
-async function handleAIDeadlineClarification(chatId, userId, text, pending, user, env) {
+async function handleAIDeadlineClarification(chatId, userId, text, pending, user, env, updateId = null) {
   const parsed = routeExplicitSelfTask(`Создай задачу себе ${text}`);
   const deadline = parsed?.parameters?.due_date;
   if (!deadline) {
@@ -794,14 +827,14 @@ async function handleAIDeadlineClarification(chatId, userId, text, pending, user
   const result = await executeAIAction({
     action: "create_task",
     parameters: {employee: pending.employee, title: pending.title, due_date: deadline}
-  }, user, env);
+  }, user, env, updateId);
   if (result.success || !String(result.message || "").includes("обязательно нужен дедлайн")) {
     await clearState(userId, env);
   }
   await sendMessage(chatId, result.message, env, result.keyboard);
 }
 
-async function handleConversationState(chatId, userId, text, state, user, message, env) {
+async function handleConversationState(chatId, userId, text, state, user, message, env, updateId = null) {
   const stateName = state.state;
   const stateData = state.data ? JSON.parse(state.data) : {};
   console.log(`\u{1F504} Handling state: ${stateName}, data:`, stateData);
@@ -818,7 +851,7 @@ async function handleConversationState(chatId, userId, text, state, user, messag
         await sendMessage(chatId, "\u{1F4C5} \u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0434\u0435\u0434\u043B\u0430\u0439\u043D \u0437\u0430\u0434\u0430\u0447\u0438:", env, calendar);
         break;
       case "AI_TASK_DEADLINE":
-        await handleAIDeadlineClarification(chatId, userId, text, stateData, user, env);
+        await handleAIDeadlineClarification(chatId, userId, text, stateData, user, env, updateId);
         break;
       case "ADD_COMMENT":
         console.log("\u{1F4AC} Adding comment to task:", stateData.taskId);
@@ -1653,7 +1686,7 @@ async function handleDeselectAllEmployees(chatId, messageId, userId, env) {
   }
 }
 __name(handleDeselectAllEmployees, "handleDeselectAllEmployees");
-async function handleConfirmEmployees(chatId, messageId, userId, user, env) {
+async function handleConfirmEmployees(chatId, messageId, userId, user, env, updateId = null) {
   try {
     const state = await getUserState(userId, env);
     const stateData = state && state.data ? JSON.parse(state.data) : {};
@@ -1661,8 +1694,14 @@ async function handleConfirmEmployees(chatId, messageId, userId, user, env) {
       await sendMessage(chatId, "\u274C \u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0445\u043E\u0442\u044F \u0431\u044B \u043E\u0434\u043D\u043E\u0433\u043E \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u0430", env);
       return;
     }
-    console.log(`\u{1F4DD} Creating tasks for ${stateData.selectedEmployees.length} employees`);
+    console.log("\u{1F4DD} Creating tasks for " + stateData.selectedEmployees.length + " employees");
+    const requestKey = updateId == null ? "callback:" + Date.now() : String(updateId);
     for (const empId of stateData.selectedEmployees) {
+      const notificationText =
+        "\u{1F4CB} **\u041D\u043E\u0432\u0430\u044F \u0437\u0430\u0434\u0430\u0447\u0430!**\n\n" +
+        stateData.description +
+        "\n\n\u{1F4C5} \u0414\u0435\u0434\u043B\u0430\u0439\u043D: " +
+        (stateData.deadline ? formatDeadline(stateData.deadline) : "\u041D\u0435 \u0443\u043A\u0430\u0437\u0430\u043D");
       await createTask(
         stateData.description,
         stateData.description,
@@ -1670,23 +1709,17 @@ async function handleConfirmEmployees(chatId, messageId, userId, user, env) {
         userId,
         empId,
         user.org_id,
-        env
-      );
-      await sendMessage(
-        empId,
-        `\u{1F4CB} **\u041D\u043E\u0432\u0430\u044F \u0437\u0430\u0434\u0430\u0447\u0430!**
-
-${stateData.description}
-
-\u{1F4C5} \u0414\u0435\u0434\u043B\u0430\u0439\u043D: ${stateData.deadline ? formatDeadline(stateData.deadline) : "\u041D\u0435 \u0443\u043A\u0430\u0437\u0430\u043D"}`,
-        env
+        env,
+        "telegram:" + requestKey + ":task:" + empId,
+        notificationText
       );
     }
     await clearState(userId, env);
-    await editMessage(chatId, messageId, `\u2705 \u0417\u0430\u0434\u0430\u0447\u0430 \u0441\u043E\u0437\u0434\u0430\u043D\u0430 \u0434\u043B\u044F ${stateData.selectedEmployees.length} \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u043E\u0432!`, env);
+    await editMessage(chatId, messageId, "\u2705 \u0417\u0430\u0434\u0430\u0447\u0430 \u0441\u043E\u0437\u0434\u0430\u043D\u0430 \u0434\u043B\u044F " + stateData.selectedEmployees.length + " \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u043E\u0432!", env);
   } catch (error) {
     console.error("\u274C Error in handleConfirmEmployees:", error.message);
     await sendMessage(chatId, "\u274C \u041E\u0448\u0438\u0431\u043A\u0430 \u043F\u0440\u0438 \u0441\u043E\u0437\u0434\u0430\u043D\u0438\u0438 \u0437\u0430\u0434\u0430\u0447", env);
+    throw error;
   }
 }
 __name(handleConfirmEmployees, "handleConfirmEmployees");
@@ -1943,6 +1976,8 @@ __name(handleDeadlineTimeCallback, "handleDeadlineTimeCallback");
 async function checkReminders(env) {
   console.log("\u23F0 Checking reminders...");
   try {
+    await dispatchNotificationOutbox(env);
+    await env.DB.prepare("DELETE FROM processed_updates WHERE status IN ('processed', 'failed') AND updated_at < datetime('now', '-30 days')").run();
     await checkTaskReminders(env);
     await checkMeetingReminders(env);
     await checkPendingAIDeadlineClarifications(env);
@@ -2216,7 +2251,8 @@ async function checkPendingAIDeadlineClarifications(env) {
           parameters: {
             employee: pending.employee,
             title: pending.title,
-            due_date: getNextTashkentTenDeadline(now)
+            due_date: getNextTashkentTenDeadline(now),
+            idempotency_key: "auto:" + (pending.requestKey || ("ai-deadline:" + row.user_id + ":" + pending.askedAt))
           }
         }, user, env);
         if (result.success) {
@@ -2540,19 +2576,81 @@ async function getOrgBossId(orgId, env) {
   }
 }
 __name(getOrgBossId, "getOrgBossId");
-async function createTask(title, description, deadline, createdBy, assignedTo, orgId, env) {
+async function createTask(title, description, deadline, createdBy, assignedTo, orgId, env, idempotencyKey, notificationText = null) {
   try {
-    await env.DB.prepare(`
-      INSERT INTO tasks (title, description, deadline, created_by, assigned_to, org_id)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(title, description, deadline, createdBy, assignedTo, orgId).run();
-    console.log(`\u2705 Task created for employee ${assignedTo}`);
+    if (!idempotencyKey) throw new Error("Task creation requires an idempotency key");
+    const statements = [
+      env.DB.prepare(`
+        INSERT INTO tasks (title, description, deadline, created_by, assigned_to, org_id, idempotency_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(idempotency_key) DO NOTHING
+      `).bind(title, description, deadline, createdBy, assignedTo, orgId, idempotencyKey)
+    ];
+    if (notificationText) {
+      statements.push(env.DB.prepare(`
+        INSERT OR IGNORE INTO notification_outbox (dedupe_key, recipient_id, message_text)
+        SELECT ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM tasks WHERE idempotency_key = ?)
+      `).bind("task-assignee:" + idempotencyKey, assignedTo, notificationText, idempotencyKey));
+    }
+    await env.DB.batch(statements);
+    const task = await env.DB.prepare(
+      "SELECT id FROM tasks WHERE idempotency_key = ?"
+    ).bind(idempotencyKey).first();
+    console.log("\u2705 Idempotent task request saved for employee " + assignedTo);
+    if (notificationText) await dispatchNotificationOutbox(env);
+    return task;
   } catch (error) {
     console.error("\u274C Error creating task:", error.message);
+    error.retryableWebhook = true;
     throw error;
   }
 }
 __name(createTask, "createTask");
+async function dispatchNotificationOutbox(env, limit = 10) {
+  try {
+    for (let i = 0; i < limit; i++) {
+      const notification = await env.DB.prepare(`
+        UPDATE notification_outbox
+        SET status = 'processing', attempts = attempts + 1, updated_at = datetime('now')
+        WHERE id = (
+          SELECT id
+          FROM notification_outbox
+          WHERE (status = 'pending' AND datetime(available_at) <= datetime('now'))
+             OR (status = 'processing' AND datetime(updated_at) <= datetime('now', '-5 minutes'))
+          ORDER BY id
+          LIMIT 1
+        )
+        RETURNING id, recipient_id, message_text, attempts
+      `).first();
+      if (!notification) break;
+      const result = await sendMessage(notification.recipient_id, notification.message_text, env);
+      if (result && result.ok) {
+        await env.DB.prepare(`
+          UPDATE notification_outbox
+          SET status = 'sent', sent_at = datetime('now'), updated_at = datetime('now'), last_error = NULL
+          WHERE id = ?
+        `).bind(notification.id).run();
+        continue;
+      }
+      const attempts = Number(notification.attempts || 1);
+      const backoffSeconds = Math.min(21600, 30 * Math.pow(2, Math.min(attempts - 1, 10)));
+      const errorMessage = String(result?.description || "Telegram sendMessage failed").slice(0, 500);
+      await env.DB.prepare(`
+        UPDATE notification_outbox
+        SET status = 'pending',
+            available_at = datetime('now', '+' || ? || ' seconds'),
+            updated_at = datetime('now'),
+            last_error = ?
+        WHERE id = ?
+      `).bind(backoffSeconds, errorMessage, notification.id).run();
+      break;
+    }
+  } catch (error) {
+    console.error("\u274C Error dispatching task notification outbox:", error.message);
+  }
+}
+__name(dispatchNotificationOutbox, "dispatchNotificationOutbox");
 
 // ============================================================
 // 🔐 AI POLICY ENGINE
@@ -2752,7 +2850,7 @@ __name(getTaskStatusLabel, "getTaskStatusLabel");
 // 🤖 AI ACTION EXECUTOR
 // ============================================================
 
-async function executeAIAction(route, user, env) {
+async function executeAIAction(route, user, env, updateId = null) {
   try {
     const action = route?.action;
     const parameters = route?.parameters || {};
@@ -2827,10 +2925,12 @@ async function executeAIAction(route, user, env) {
             message: "❓ Укажи, кому создать задачу, и добавь дату дедлайна."
           };
         }
+        const askedAt = new Date().toISOString();
         await setState(user.id, "AI_TASK_DEADLINE", {
           title,
           employee: requestedEmployee || "self",
-          askedAt: new Date().toISOString(),
+          askedAt,
+          requestKey: updateId == null ? "ai-deadline:" + user.id + ":" + askedAt : "telegram:" + updateId,
           remindedAt: null
         }, env);
         return {
@@ -2904,6 +3004,14 @@ async function executeAIAction(route, user, env) {
         assignee = employeeResult.user;
       }
 
+      const taskIdempotencyKey = updateId !== null && updateId !== undefined
+        ? "telegram:" + updateId + ":task:" + assignee.id
+        : String(parameters.idempotency_key || ("internal:" + user.id + ":" + assignee.id + ":" + Date.now()));
+      const assigneeNotification = assignee.id === user.id
+        ? null
+        : "\u{1F4CB} \u0422\u0435\u0431\u0435 \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D\u0430 \u043D\u043E\u0432\u0430\u044F \u0437\u0430\u0434\u0430\u0447\u0430!\n\n\u0417\u0430\u0434\u0430\u0447\u0430: " + title +
+          "\n\u{1F464} \u041F\u043E\u0441\u0442\u0430\u0432\u0438\u043B: " + (user.first_name || "\u0420\u0443\u043A\u043E\u0432\u043E\u0434\u0438\u0442\u0435\u043B\u044C") +
+          "\n\u{1F4C5} \u0414\u0435\u0434\u043B\u0430\u0439\u043D: " + formatDeadline(deadline);
       await createTask(
         title,
         "",
@@ -2911,19 +3019,10 @@ async function executeAIAction(route, user, env) {
         user.id,
         assignee.id,
         user.org_id,
-        env
+        env,
+        taskIdempotencyKey,
+        assigneeNotification
       );
-
-      if (assignee.id !== user.id) {
-        await sendMessage(
-          assignee.id,
-          "📋 Тебе назначена новая задача!\n\nЗадача: " + title +
-            "\n👤 Поставил: " + (user.first_name || "Руководитель") +
-            "\n📅 Дедлайн: " + formatDeadline(deadline),
-          env
-        );
-      }
-
       console.log(
         `✅ AI created task "${title}" for user ${assignee.id} by user ${user.id}`
       );
@@ -3459,6 +3558,7 @@ async function executeAIAction(route, user, env) {
       "❌ AI ACTION STACK:",
       error.stack
     );
+    if (error?.retryableWebhook) throw error;
 
     return {
       success: false,
