@@ -2917,9 +2917,9 @@ async function executeAIAction(route, user, env) {
       if (assignee.id !== user.id) {
         await sendMessage(
           assignee.id,
-          "📋 Тебе назначена новая задача!\\n\\nЗадача: " + title +
-            "\\n👤 Поставил: " + (user.first_name || "Руководитель") +
-            "\\n📅 Дедлайн: " + formatDeadline(deadline),
+          "📋 Тебе назначена новая задача!\n\nЗадача: " + title +
+            "\n👤 Поставил: " + (user.first_name || "Руководитель") +
+            "\n📅 Дедлайн: " + formatDeadline(deadline),
           env
         );
       }
