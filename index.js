@@ -2914,6 +2914,16 @@ async function executeAIAction(route, user, env) {
         env
       );
 
+      if (assignee.id !== user.id) {
+        await sendMessage(
+          assignee.id,
+          "📋 Тебе назначена новая задача!\\n\\nЗадача: " + title +
+            "\\n👤 Поставил: " + (user.first_name || "Руководитель") +
+            "\\n📅 Дедлайн: " + formatDeadline(deadline),
+          env
+        );
+      }
+
       console.log(
         `✅ AI created task "${title}" for user ${assignee.id} by user ${user.id}`
       );
